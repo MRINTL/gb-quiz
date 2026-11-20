@@ -1,0 +1,113 @@
+rules_version = '2';
+
+// HB Quiz — Firestore Security Rules
+//
+// hbquiz_rooms/{roomId}                  public board state: category names + card statuses.
+//                                        Any signed-in (anonymous) user may READ a single room by its ID,
+//                                        only the creator (hostUid == auth.uid) may WRITE.
+// hbquiz_rooms/{roomId}/private/content  questions, answers, team names, scores. Only the room creator.
+//
+// Rooms cannot be listed, so a room is reachable only by knowing its unguessable 12-char ID.
+//
+// The whole HB Quiz block between the BEGIN/END markers is self-contained (all helper functions
+// live inside it, prefixed with "hbq"), so it can be pasted as-is into another project's rules
+// that share the same Firestore database — just put it before that project's catch-all deny.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===== BEGIN HB Quiz =====
+    match /hbquiz_rooms/{roomId} {
+
+      function hbqSignedIn() {
+        return request.auth != null;
+      }
+
+      function hbqRoomPath() {
+        return /databases/$(database)/documents/hbquiz_rooms/$(roomId);
+      }
+
+      function hbqCardIds() {
+        return [
+          'c0_100', 'c0_200', 'c0_300', 'c0_400', 'c0_500', 'c0_600',
+          'c1_100', 'c1_200', 'c1_300', 'c1_400', 'c1_500', 'c1_600',
+          'c2_100', 'c2_200', 'c2_300', 'c2_400', 'c2_500', 'c2_600',
+          'c3_100', 'c3_200', 'c3_300', 'c3_400', 'c3_500', 'c3_600',
+          'c4_100', 'c4_200', 'c4_300', 'c4_400', 'c4_500', 'c4_600',
+          'c5_100', 'c5_200', 'c5_300', 'c5_400', 'c5_500', 'c5_600'
+        ];
+      }
+
+      function hbqValidCategoryName(name) {
+        return name is string && name.size() <= 60;
+      }
+
+      // The public room document may hold ONLY these fields — no questions, answers or scores.
+      function hbqValidRoom(data) {
+        return data.keys().hasOnly(['hostUid', 'categories', 'cards', 'createdAt', 'updatedAt'])
+          && data.hostUid is string
+          && data.categories is list
+          && data.categories.size() == 6
+          && hbqValidCategoryName(data.categories[0])
+          && hbqValidCategoryName(data.categories[1])
+          && hbqValidCategoryName(data.categories[2])
+          && hbqValidCategoryName(data.categories[3])
+          && hbqValidCategoryName(data.categories[4])
+          && hbqValidCategoryName(data.categories[5])
+          && data.cards is map
+          && data.cards.keys().hasOnly(hbqCardIds())
+          && data.cards.keys().hasAll(hbqCardIds())
+          && data.cards.values().hasOnly(['available', 'opened', 'completed'])
+          && data.updatedAt == request.time;
+      }
+
+      // Private host doc: questions/answers, team names and who got each card's points.
+      function hbqValidHostContent(data) {
+        return data.keys().hasOnly(['questions', 'teamNames', 'awards'])
+          && data.questions is map
+          && (!('teamNames' in data) || (
+            data.teamNames is list
+            && data.teamNames.size() == 2
+            && data.teamNames[0] is string && data.teamNames[0].size() <= 40
+            && data.teamNames[1] is string && data.teamNames[1].size() <= 40))
+          && (!('awards' in data) || (
+            data.awards is map
+            && data.awards.keys().hasOnly(hbqCardIds())
+            && data.awards.values().hasOnly([0, 1])));
+      }
+
+      allow get: if hbqSignedIn();
+      allow list: if false;
+
+      allow create: if hbqSignedIn()
+        && roomId.matches('^[2-9A-HJKMNP-Z]{12}$')
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && hbqValidRoom(request.resource.data);
+
+      allow update: if hbqSignedIn()
+        && resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostUid == resource.data.hostUid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && hbqValidRoom(request.resource.data);
+
+      allow delete: if hbqSignedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /private/{docId} {
+        allow read, delete: if hbqSignedIn() && get(hbqRoomPath()).data.hostUid == request.auth.uid;
+
+        // getAfter() lets the host create this doc in the same batch as the room itself.
+        allow create, update: if hbqSignedIn()
+          && docId == 'content'
+          && getAfter(hbqRoomPath()).data.hostUid == request.auth.uid
+          && hbqValidHostContent(request.resource.data);
+      }
+    }
+    // ===== END HB Quiz =====
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

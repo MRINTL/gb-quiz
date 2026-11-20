@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+.firebase
+
+# Questions + answers: never in the (public) repository.
+# CI writes this file from the BIRTHDAY_MD repository secret before building.
+BIRTHDAY.md
